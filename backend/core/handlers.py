@@ -1,7 +1,7 @@
 """Python implementations behind the model-facing tools."""
-
-from checks import check_item, missing_hints, parse_turns, plan_warnings
-from drugfix import correct_drug_names
+from services.soap_builder import build_soap
+from services.drugfix import correct_drug_names
+from services.validation import check_item, missing_hints, parse_turns
 
 DIAGNOSIS_STATUSES = {"confirmed", "suspected", "ruled_out", "history"}
 MEDICATION_STATUSES = {"prescribed", "dose_changed", "continued", "stopped", "not_prescribed", "patient_reported"}
@@ -29,12 +29,21 @@ class Case:
         )
 
 
+def _low(item, field):
+    return str(item.get(field, "")).strip().lower()
+
+
 def _item_identity(key, item):
+    """Two items with the same identity are the same thing; the newer one replaces the older one."""
     if key in ("diagnoses", "medications"):
-        return (key, item.get("name", "").strip().lower())
+        return (key, _low(item, "name"))
     if key == "follow_up":
-        return (key, item.get("type", ""), item.get("detail", "").strip().lower())
-    return (key, item.get("category", ""), item.get("detail", "").strip().lower())
+        return (key, item.get("type", ""), _low(item, "detail"))
+    if key in ("tasks", "recalls"):
+        return (key, _low(item, "detail"), _low(item, "due"))
+    if key == "referrals":
+        return (key, _low(item, "refer_to"), _low(item, "detail"))
+    return (key, item.get("category", ""), _low(item, "detail"))
 
 
 def extract(case, key, items, always_doctor=False):
@@ -88,15 +97,25 @@ def extract_findings(case, findings=None, **_):
     return extract(case, "findings", findings or [])
 
 
-def generate_soap_note(case, subjective="", objective="", assessment="", plan="", summary="", **_):
-    """Save the note. Problems are shown as warnings to the reviewer, not hidden."""
-    case.soap = {
-        "subjective": subjective or "Not stated.", "objective": objective or "Not stated.",
-        "assessment": assessment or "Not stated.", "plan": plan or "Not stated.",
-        "summary": summary or "Not stated.",
-        "validation_warnings": plan_warnings(str(plan), case.turns)
-        + missing_hints(case.turns, case.results.get("medications", []), case.results.get("diagnoses", [])),
-    }
+# What the doctor arranges for later: only the doctor's words count.
+def extract_referrals(case, referrals=None, **_):
+    return extract(case, "referrals", referrals or [], always_doctor=True)
+
+
+def extract_recalls(case, recalls=None, **_):
+    return extract(case, "recalls", recalls or [], always_doctor=True)
+
+
+def extract_tasks(case, tasks=None, **_):
+    return extract(case, "tasks", tasks or [], always_doctor=True)
+
+
+def generate_soap_note(case, summary="", **_):
+    """The four sections are built in Python from accepted items; only the summary is the model's text."""
+    sections = build_soap(case.results)
+    case.soap = {**sections, "summary": summary or "Not stated.",
+                 "validation_warnings": missing_hints(case.turns, case.results.get("medications", []),
+                                                      case.results.get("diagnoses", []))}
     return {"ok": True}
 
 
@@ -106,5 +125,8 @@ FUNCTIONS = {
     "extract_follow_up": extract_follow_up,
     "extract_history": extract_history,
     "extract_findings": extract_findings,
+    "extract_referrals": extract_referrals,
+    "extract_recalls": extract_recalls,
+    "extract_tasks": extract_tasks,
     "generate_soap_note": generate_soap_note,
 }

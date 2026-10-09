@@ -4,7 +4,9 @@
 ```bash
 cd backend
 pip install -r requirements.txt
+# NeMo model auto-downloads from HuggingFace on first run (~2.5 GB, one time only)
 python -m uvicorn main:app --reload
+
 # In another terminal:
 cd frontend
 npm install
@@ -14,20 +16,41 @@ npm run dev
 The frontend is served by Vite; its `/api` requests are proxied to FastAPI on port 8000.
 
 ## Architecture
-- `backend/main.py` exposes the encounter, transcription, and history API routes.
-- `backend/agent.py` manages the Responses API tool loop for one consultation.
-- `backend/core/tools.py` defines tool schemas and their Python implementations. `Case` holds the transcript, extracted data, corrections, and SOAP note for one request.
-- `backend/checks.py` parses speaker turns and validates quoted evidence, speaker permissions, and plan claims.
-- `backend/drugfix.py` corrects recognized medication-name transcription errors before extraction.
-- `backend/llm.py` configures the OpenAI-compatible client and JSON response helper.
-- `backend/transcribe.py` transcribes audio and adds speaker labels. The current `.env` selects local Nemotron; its model downloads on first use.
-- `backend/db.py` stores completed encounters and searchable diagnosis/medication records in SQLite.
-- `frontend/src/App.jsx` contains the upload, transcript-review, results, and history views; `App.css` styles them.
 
-The normal audio workflow is: upload to `/api/transcribe`, review the labeled transcript in the frontend, then send that transcript to `/api/encounters` for extraction and SOAP generation. The encounter endpoint accepts transcript text only.
+### ASR — Nemotron 3.5 Streaming 0.6B (`nvidia/nemotron-3.5-asr-streaming-0.6b`)
+- **Model**: Cache-Aware FastConformer-RNNT, 600M params, multilingual
+- **Streaming** (`live_session.py`): 160 ms audio chunks → Nemotron → partial text
+  returned per chunk; no VAD boundary-waiting; Kaggle diarizer adds speaker labels
+- **Batch** (`transcribe.py`): uploaded file → same model → full transcript
+- **Single model instance** shared by both paths — loaded once on first use
 
-The text model is selected with `MODEL` and can use an OpenAI-compatible `OPENAI_BASE_URL`. Audio transcription always uses local Nemotron; there is no cloud transcription fallback.
+### Data Flow
+```
+Mic → WebSocket → 160 ms PCM chunks → Nemotron streaming cache
+                                     → partial text per chunk
+                                     → Kaggle diarizer (every 5 s) → speaker labels
+                                     → role classifier → Doctor / Patient
+File upload → /api/transcribe → librosa → Nemotron batch → transcript
+```
+
+### Backend modules
+| File | Role |
+|------|------|
+| `main.py` | FastAPI routes |
+| `services/nemotron_asr.py` | Nemotron 3.5 model wrapper (streaming + batch) |
+| `services/live_session.py` | WebSocket session: chunk feed → ASR → diarizer |
+| `services/transcribe.py` | Batch file transcription |
+| `services/diarizer_client.py` | Kaggle diarization REST client (unchanged) |
+| `services/role_classifier.py` | Doctor/Patient role classification via Ollama |
+| `routes_live.py` | WebSocket route `/ws/transcribe` |
+
+### Dead files (safe to delete)
+- `services/fast_asr.py` — replaced by `nemotron_asr.py`
+- `services/download_nemotron.py` — no longer needed (NeMo auto-downloads)
 
 ## Known limits
-- Local Nemotron transcription does not diarize speakers; speaker labels are inferred from transcript text and should be reviewed.
-- Extraction remains model-assisted. Review medication-name corrections, speaker labels, evidence, and the tool trace before relying on generated documentation.
+- The NeMo streaming API (`transcribe_streaming`) requires NeMo ≥ 2.1. If your
+  installed version is older, `live_session.py` falls back to batch-per-chunk
+  automatically.
+- Diarization still requires the Kaggle service. Update `diarizer_url.txt` or
+  set `DIARIZER_URL` env var with your running Kaggle URL.

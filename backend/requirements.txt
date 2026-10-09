@@ -3,5 +3,16 @@ uvicorn[standard]
 python-multipart
 openai
 python-dotenv
-torch
-transformers>=5.13.0
+# NeMo ASR — installs PyTorch + NeMo toolkit (cache-aware streaming model)
+# NOTE: on CPU-only machines, set CUDA_VISIBLE_DEVICES=-1 or use
+#       pip install torch --index-url https://download.pytorch.org/whl/cpu
+#       BEFORE installing nemo_toolkit to avoid pulling CUDA wheels.
+nemo_toolkit[asr]
+# Audio loading for batch transcription
+librosa
+soundfile
+numpy
+# Fallback ASR (CPU-friendly, lighter than NeMo)
+faster-whisper
+# Speaker role classification via local LLM
+ollama
